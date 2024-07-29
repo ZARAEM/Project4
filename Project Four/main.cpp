@@ -1,9 +1,19 @@
+/**
+* Author: Mearaj Ahmed
+* Assignment: Rise of the AI
+* Date due: 2024-07-27, 11:59pm
+* I pledge that I have completed this assignment without
+* collaborating with anyone else, in conformance with the
+* NYU School of Engineering Policies and Procedures on
+* Academic Misconduct.
+**/
+
 #define GL_SILENCE_DEPRECATION
 #define STB_IMAGE_IMPLEMENTATION
 #define LOG(argument) std::cout << argument << '\n'
 #define GL_GLEXT_PROTOTYPES 1
 #define FIXED_TIMESTEP 0.0166666f
-#define PLATFORM_COUNT 14
+#define PLATFORM_COUNT 12
 #define ENEMY_COUNT 3
 
 #ifdef _WINDOWS
@@ -30,10 +40,9 @@ struct GameState
     Entity* enemies;
 
     Mix_Music* bgm;
-    Mix_Chunk* jump_sfx;
 };
 
-enum AppStatus { RUNNING, TERMINATED };
+enum AppStatus { RUNNING, TERMINATED, GAME_OVER, GAME_WON };
 
 // ––––– CONSTANTS ––––– //
 constexpr int WINDOW_WIDTH = 640 * 2,
@@ -58,7 +67,8 @@ constexpr float MILLISECONDS_IN_SECOND = 1000.0;
 //Credit: https://pixelfrog-assets.itch.io/pixel-adventure-1
 constexpr char PLAYER_FILEPATH[] = "assets/character.png",
 ENEMY_FILEPATH[] = "assets/enemy.png",
-PLATFORM_FILEPATH[] = "assets/cobblestone.png";
+PLATFORM_FILEPATH[] = "assets/cobblestone.png",
+FONT_FILEPATH[] = "assets/font1.png";
 
 // Credit: Fiverr thing i commissioned long ago
 constexpr char BGM_FILEPATH[] = "assets/song.mp3";
@@ -89,6 +99,75 @@ void process_input();
 void update();
 void render();
 void shutdown();
+
+constexpr int FONTBANK_SIZE = 16;
+
+GLuint font_texture_id;
+
+void draw_text(ShaderProgram* program, GLuint font_texture_id, std::string text,
+    float font_size, float spacing, glm::vec3 position)
+{
+    // Scale the size of the fontbank in the UV-plane
+    // We will use this for spacing and positioning
+    float width = 1.0f / FONTBANK_SIZE;
+    float height = 1.0f / FONTBANK_SIZE;
+
+    // Instead of having a single pair of arrays, we'll have a series of pairs—one for
+    // each character. Don't forget to include <vector>!
+    std::vector<float> vertices;
+    std::vector<float> texture_coordinates;
+
+    // For every character...
+    for (int i = 0; i < text.size(); i++) {
+        // 1. Get their index in the spritesheet, as well as their offset (i.e. their
+        //    position relative to the whole sentence)
+        int spritesheet_index = (int)text[i];  // ascii value of character
+        float offset = (font_size + spacing) * i;
+
+        // 2. Using the spritesheet index, we can calculate our U- and V-coordinates
+        float u_coordinate = (float)(spritesheet_index % FONTBANK_SIZE) / FONTBANK_SIZE;
+        float v_coordinate = (float)(spritesheet_index / FONTBANK_SIZE) / FONTBANK_SIZE;
+
+        // 3. Inset the current pair in both vectors
+        vertices.insert(vertices.end(), {
+            offset + (-0.5f * font_size), 0.5f * font_size,
+            offset + (-0.5f * font_size), -0.5f * font_size,
+            offset + (0.5f * font_size), 0.5f * font_size,
+            offset + (0.5f * font_size), -0.5f * font_size,
+            offset + (0.5f * font_size), 0.5f * font_size,
+            offset + (-0.5f * font_size), -0.5f * font_size,
+            });
+
+        texture_coordinates.insert(texture_coordinates.end(), {
+            u_coordinate, v_coordinate,
+            u_coordinate, v_coordinate + height,
+            u_coordinate + width, v_coordinate,
+            u_coordinate + width, v_coordinate + height,
+            u_coordinate + width, v_coordinate,
+            u_coordinate, v_coordinate + height,
+            });
+    }
+
+    // 4. And render all of them using the pairs
+    glm::mat4 model_matrix = glm::mat4(1.0f);
+    model_matrix = glm::translate(model_matrix, position);
+
+    program->set_model_matrix(model_matrix);
+    glUseProgram(program->get_program_id());
+
+    glVertexAttribPointer(program->get_position_attribute(), 2, GL_FLOAT, false, 0,
+        vertices.data());
+    glEnableVertexAttribArray(program->get_position_attribute());
+    glVertexAttribPointer(program->get_tex_coordinate_attribute(), 2, GL_FLOAT, false, 0,
+        texture_coordinates.data());
+    glEnableVertexAttribArray(program->get_tex_coordinate_attribute());
+
+    glBindTexture(GL_TEXTURE_2D, font_texture_id);
+    glDrawArrays(GL_TRIANGLES, 0, (int)(text.size() * 6));
+
+    glDisableVertexAttribArray(program->get_position_attribute());
+    glDisableVertexAttribArray(program->get_tex_coordinate_attribute());
+}
 
 // ––––– GENERAL FUNCTIONS ––––– //
 GLuint load_texture(const char* filepath)
@@ -156,26 +235,33 @@ void initialise()
 
     // ––––– PLATFORM ––––– //
     GLuint platform_texture_id = load_texture(PLATFORM_FILEPATH);
+    font_texture_id = load_texture(FONT_FILEPATH);
 
-    g_game_state.platforms = new Entity[PLATFORM_COUNT + 2];
+    g_game_state.platforms = new Entity[PLATFORM_COUNT];
 
-    for (int i = 0; i < PLATFORM_COUNT + 2; i++)
-    {
-        if (i < 5) {
-            g_game_state.platforms[i] = Entity(platform_texture_id, 0.0f, 0.4f, 1.0f, PLATFORM);
-            g_game_state.platforms[i].set_position(glm::vec3(i - PLATFORM_OFFSET, -3.0f, 0.0f));
-            g_game_state.platforms[i].update(0.0f, NULL, NULL, 0);
+    const float YLVL1 = -3.9f; // plat 1
+    const float YLVL2 = -2.5f; // plat 2
+
+    for (int i = 0; i < PLATFORM_COUNT; i++) {
+        float y_position = -3.9f;
+
+        if (i == 5 || i == 6 || i == 7) {
+            y_position = YLVL2;
         }
-        else if (i >= 5 && i < 11) {
-            g_game_state.platforms[i] = Entity(platform_texture_id, 0.0f, 0.4f, 1.0f, PLATFORM);
-            g_game_state.platforms[i].set_position(glm::vec3(i - PLATFORM_OFFSET + 1, -3.0f, 0.0f));
-            g_game_state.platforms[i].update(0.0f, NULL, NULL, 0);
+        else {
+            y_position = YLVL1;
         }
-        else if (i >= 11 && i < 14) {
-            g_game_state.platforms[i] = Entity(platform_texture_id, 0.0f, 0.4f, 1.0f, PLATFORM);
-            g_game_state.platforms[i].set_position(glm::vec3(i - 12, -1.0f, 0.0f));
-            g_game_state.platforms[i].update(0.0f, NULL, NULL, 0);
-        }
+
+        g_game_state.platforms[i] = Entity(
+            platform_texture_id,
+            0.0f,
+            0.4f,
+            1.0f,
+            PLATFORM
+        );
+
+        g_game_state.platforms[i].set_position(glm::vec3(i - PLATFORM_OFFSET, y_position, 0.0f));
+        g_game_state.platforms[i].update(0.0f, NULL, NULL, 0);
     }
 
     // PLAYER //
@@ -183,16 +269,16 @@ void initialise()
 
     g_game_state.player = new Entity(
         player_texture_id,         // texture id
-        1.0f,                      // speed
-        0.9f,                      // width
-        0.9f,                      // height
+        2.0f,                      // speed
+        0.8f,                      // width
+        0.8f,                      // height
         PLAYER
     );
 
-    g_game_state.player->set_position(glm::vec3(-4.5f, -2.15f, 0.0f));
+    g_game_state.player->set_acceleration(glm::vec3(0.0f, -4.905f, 0.0f));
 
-    // Jumping
-    g_game_state.player->set_jumping_power(3.0f);
+    g_game_state.player->set_position(glm::vec3(-4.5f, -2.6f, 0.0f));
+    g_game_state.player->set_jumping_power(5.0f);
 
     // ––––– ENEMIES ––––– //
     GLuint enemy_texture_id = load_texture(ENEMY_FILEPATH);
@@ -202,22 +288,17 @@ void initialise()
     for (int i = 0; i < ENEMY_COUNT; i++)
     {
         g_game_state.enemies[i] = Entity(enemy_texture_id, 1.0f, 1.0f, 1.0f, ENEMY, GUARD, IDLE);
+        g_game_state.enemies[i].set_acceleration(glm::vec3(0.0f, -4.905f, 0.0f));
     }
 
-    // first enemy on left plat
-    g_game_state.enemies[0].set_position(glm::vec3(-2.5f, -3.0f, 0.0f));
-    g_game_state.enemies[0].set_movement(glm::vec3(0.0f)); // idle
-    g_game_state.enemies[0].set_acceleration(glm::vec3(0.0f, -9.81f, 0.0f));
+    // first enemy on guard
+    g_game_state.enemies[0].set_position(glm::vec3(-2.5f, -2.8f, 0.0f));
 
     // second enemy on middle upper plat
-    g_game_state.enemies[1].set_position(glm::vec3(-1.0f, -1.0f, 0.0f));
-    g_game_state.enemies[1].set_movement(glm::vec3(1.0f, 0.0f, 0.0f)); //walking
-    g_game_state.enemies[1].set_acceleration(glm::vec3(0.0f, -9.81f, 0.0f));
+    g_game_state.enemies[1].set_position(glm::vec3(-3.0f, -2.8f, 0.0f));
 
     // third enemy on right plat
-    g_game_state.enemies[2].set_position(glm::vec3(2.5f, -2.15f, 0.0f));
-    g_game_state.enemies[2].set_movement(glm::vec3(2.0f, 0.0f, 0.0f)); //running
-    g_game_state.enemies[2].set_acceleration(glm::vec3(0.0f, -9.81f, 0.0f));
+    g_game_state.enemies[2].set_position(glm::vec3(0.0f, -2.8f, 0.0f));
 
     // ––––– AUDIO STUFF ––––– //
     Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 4096);
@@ -231,16 +312,17 @@ void initialise()
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-
 void process_input()
 {
     g_game_state.player->set_movement(glm::vec3(0.0f));
 
     SDL_Event event;
+
     while (SDL_PollEvent(&event))
     {
         switch (event.type) {
-            // End game
+
+        // Emd game
         case SDL_QUIT:
         case SDL_WINDOWEVENT_CLOSE:
             g_app_status = TERMINATED;
@@ -258,7 +340,6 @@ void process_input()
                 if (g_game_state.player->get_collided_bottom())
                 {
                     g_game_state.player->jump();
-                    Mix_PlayChannel(-1, g_game_state.jump_sfx, 0);
                 }
                 break;
 
@@ -273,11 +354,15 @@ void process_input()
 
     const Uint8* key_state = SDL_GetKeyboardState(NULL);
 
-    if (key_state[SDL_SCANCODE_LEFT])       g_game_state.player->move_left();
-    else if (key_state[SDL_SCANCODE_RIGHT]) g_game_state.player->move_right();
+    if (key_state[SDL_SCANCODE_LEFT]) { 
+        g_game_state.player->move_left(); 
+    } else if (key_state[SDL_SCANCODE_RIGHT]) { 
+        g_game_state.player->move_right(); 
+    }
 
-    if (glm::length(g_game_state.player->get_movement()) > 1.0f)
+    if (glm::length(g_game_state.player->get_movement()) > 1.0f) {
         g_game_state.player->normalise_movement();
+    }
 
 
 }
@@ -298,37 +383,23 @@ void update()
 
     while (delta_time >= FIXED_TIMESTEP)
     {
-        g_game_state.player->update(FIXED_TIMESTEP, g_game_state.player, g_game_state.platforms, PLATFORM_COUNT + 2);
+        g_game_state.player->update(FIXED_TIMESTEP, g_game_state.player, g_game_state.platforms, PLATFORM_COUNT);
 
-        for (int i = 0; i < ENEMY_COUNT; i++)
-        {
-            if (i == 0) {
-                g_game_state.enemies[i].set_movement(glm::vec3(0.0f));
-            }
-            else if (i == 1) {
-                glm::vec3 pos = g_game_state.enemies[i].get_position();
-                if (pos.x <= -1.5f) {
-                    g_game_state.enemies[i].set_movement(glm::vec3(1.0f, 0.0f, 0.0f));
-                }
-                else if (pos.x >= 1.5f) {
-                    g_game_state.enemies[i].set_movement(glm::vec3(-1.0f, 0.0f, 0.0f));
-                }
-            }
-            else if (i == 2) {
+        for (int i = 0; i < ENEMY_COUNT; i++) {
+            g_game_state.enemies->update(FIXED_TIMESTEP, g_game_state.player, g_game_state.platforms, PLATFORM_COUNT);
 
-                glm::vec3 pos = g_game_state.enemies[i].get_position();
-                if (pos.x <= 2.0f) {
-                    g_game_state.enemies[i].set_movement(glm::vec3(1.5f, 0.0f, 0.0f));
-                }
-                else if (pos.x >= 5.0f) {
-                    g_game_state.enemies[i].set_movement(glm::vec3(-1.5f, 0.0f, 0.0f));
-                }
+            if (g_game_state.player->check_collision(&g_game_state.enemies[i])) {
+                g_app_status = GAME_OVER;
+                break;
             }
 
-            g_game_state.enemies[i].update(FIXED_TIMESTEP,
-                g_game_state.player,
-                g_game_state.platforms,
-                PLATFORM_COUNT + 2);
+            if (g_game_state.player->get_position().x >= (WINDOW_WIDTH / 2.0f)) {
+                g_app_status = GAME_WON;
+            }
+
+            if (g_game_state.player->get_position().x > g_game_state.enemies[i].get_position().x) {
+                g_game_state.enemies[i].deactivate();
+            }
         }
 
         delta_time -= FIXED_TIMESTEP;
@@ -345,6 +416,7 @@ void render()
 
     for (int i = 0; i < PLATFORM_COUNT; i++)
         g_game_state.platforms[i].render(&g_shader_program);
+
     for (int i = 0; i < ENEMY_COUNT; i++)
         g_game_state.enemies[i].render(&g_shader_program);
 
@@ -358,7 +430,6 @@ void shutdown()
     delete[] g_game_state.platforms;
     delete[] g_game_state.enemies;
     delete    g_game_state.player;
-    Mix_FreeChunk(g_game_state.jump_sfx);
     Mix_FreeMusic(g_game_state.bgm);
 }
 
@@ -372,6 +443,16 @@ int main(int argc, char* argv[])
         process_input();
         update();
         render();
+    }
+
+    while (g_app_status == GAME_WON) {
+        draw_text(&g_shader_program, font_texture_id, "YOU WIN", 1.0f, 0.1f,
+            glm::vec3(0.0f, 0.0f, 0.0f));
+    }
+
+    while (g_app_status == GAME_OVER) {
+        draw_text(&g_shader_program, font_texture_id, "YOU LOSE", 1.0f, 0.1f,
+            glm::vec3(0.0f, 0.0f, 0.0f));
     }
 
     shutdown();

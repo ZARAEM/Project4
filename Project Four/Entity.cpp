@@ -39,7 +39,7 @@ void Entity::ai_guard(Entity* player)
 {
     switch (m_ai_state) {
     case IDLE:
-        if (glm::distance(m_position, player->get_position()) < 3.0f) m_ai_state = WALKING;
+        if (glm::distance(m_position, player->get_position()) < 0.5f) m_ai_state = WALKING;
         break;
 
     case WALKING:
@@ -95,6 +95,8 @@ Entity::Entity(GLuint texture_id, float speed, float width, float height, Entity
     // Initialize m_walking with zeros or any default value
     for (int i = 0; i < SECONDS_PER_FRAME; ++i)
         for (int j = 0; j < SECONDS_PER_FRAME; ++j) m_walking[i][j] = 0;
+
+    m_is_active = true;
 }
 
 
@@ -196,6 +198,7 @@ void const Entity::check_collision_x(Entity* collidable_entities, int collidable
         {
             float x_distance = fabs(m_position.x - collidable_entity->m_position.x);
             float x_overlap = fabs(x_distance - (m_width / 2.0f) - (collidable_entity->m_width / 2.0f));
+
             if (m_velocity.x > 0)
             {
                 m_position.x -= x_overlap;
@@ -272,6 +275,10 @@ void Entity::update(float delta_time, Entity* player, Entity* collidable_entitie
 
 void Entity::render(ShaderProgram* program)
 {
+    if (!m_is_active) {
+        return;
+    }
+
     program->set_model_matrix(m_model_matrix);
 
     if (m_animation_indices != NULL)
